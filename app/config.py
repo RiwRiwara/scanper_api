@@ -16,5 +16,9 @@ class Settings:
     # OpenAI
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
+    # MongoDB Atlas
+    MONGODB_URL: str = os.getenv("MONGODB_URL", "")
+    MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "scanper")
+
 
 settings = Settings()

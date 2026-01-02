@@ -9,7 +9,7 @@ from linebot.v3.messaging import (
     MessagingApi,
     MessagingApiBlob,
     ReplyMessageRequest,
-    FlexMessage,
+    TextMessage,
 )
 from linebot.v3.webhooks import (
     MessageEvent,
@@ -24,13 +24,9 @@ from azure.core.exceptions import HttpResponseError
 from app.config import settings
 from app.services.ocr_service import ocr_service
 from app.services.chat_service import chat_service
-from app.templates import (
-    create_welcome_message,
-    create_image_ocr_result,
-    create_pdf_ocr_result,
-    create_chat_response,
-    create_error_message,
-)
+from app.models.message import MessageType
+from app.repositories.user_repository import user_repository
+from app.repositories.message_repository import message_repository
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +55,16 @@ async def line_webhook(
 
 
 @handler.add(MessageEvent, message=ImageMessageContent)
-def handle_image_message(event: MessageEvent):
+async def handle_image_message(event: MessageEvent):
     """Handle image messages from LINE and perform OCR."""
     message_id = event.message.id
     reply_token = event.reply_token
+    line_user_id = event.source.user_id
 
     try:
+        # Get or create user in database
+        user = await user_repository.get_or_create_user(line_user_id)
+        await user_repository.increment_message_count(user)
         # Get image content from LINE
         with ApiClient(configuration) as api_client:
             blob_api = MessagingApiBlob(api_client)
@@ -98,21 +98,45 @@ def handle_image_message(event: MessageEvent):
                 f"OCR completed: message_id={message_id}, text_length={len(extracted_text)}, time={processing_time:.2f}s"
             )
 
-            # Create beautiful Flex Message
-            flex_content = create_image_ocr_result(
-                extracted_text=extracted_text,
-                image_size=content_size,
-                processing_time=processing_time,
+            # Format as simple text message (more reliable than Flex Message)
+            size_kb = content_size / 1024
+            size_mb = size_kb / 1024
+            size_display = f"{size_mb:.2f} MB" if size_mb >= 1 else f"{size_kb:.2f} KB"
+
+            # Truncate if too long
+            display_text = extracted_text[:2000] if len(extracted_text) > 2000 else extracted_text
+            truncated_notice = "\n\n⚠️ (แสดงเฉพาะ 2000 ตัวอักษรแรก)" if len(extracted_text) > 2000 else ""
+
+            result_text = (
+                f"📸 IMAGE OCR RESULT\n"
+                f"{'='*30}\n\n"
+                f"{display_text if display_text.strip() else 'ไม่พบข้อความในรูปภาพ'}\n"
+                f"{truncated_notice}\n\n"
+                f"{'='*30}\n"
+                f"📏 Size: {size_display}\n"
+                f"📝 Length: {len(extracted_text)} characters\n"
+                f"⏱️ Processing: {processing_time:.2f}s"
             )
 
-            # Reply with Flex Message
+            # Save message to database
+            await message_repository.create_message(
+                user=user,
+                message_type=MessageType.IMAGE,
+                content=extracted_text,
+                metadata={
+                    "image_size": content_size,
+                    "processing_time": processing_time,
+                    "line_message_id": message_id,
+                },
+                line_message_id=message_id,
+            )
+
+            # Reply with simple text message
             messaging_api = MessagingApi(api_client)
             messaging_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[
-                        FlexMessage(alt_text="Image OCR Result", contents=flex_content)
-                    ],
+                    messages=[TextMessage(text=result_text)],
                 )
             )
 
@@ -120,46 +144,49 @@ def handle_image_message(event: MessageEvent):
         logger.warning(f"Validation error: {e}")
         with ApiClient(configuration) as api_client:
             messaging_api = MessagingApi(api_client)
-            flex_content = create_error_message(
-                error_type="Validation Error", error_message=str(e)
-            )
+            error_text = f"⚠️ VALIDATION ERROR\n\n{str(e)}"
             messaging_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[FlexMessage(alt_text="Error", contents=flex_content)],
+                    messages=[TextMessage(text=error_text)],
                 )
             )
     except Exception as e:
         logger.error(f"Error processing image: {e}", exc_info=True)
-        with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
-            flex_content = create_error_message(
-                error_type="Processing Error",
-                error_message=f"Failed to process image: {str(e)}",
-            )
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[FlexMessage(alt_text="Error", contents=flex_content)],
+        try:
+            with ApiClient(configuration) as api_client:
+                messaging_api = MessagingApi(api_client)
+                error_text = f"⚠️ ERROR\n\nFailed to process image: {str(e)[:300]}"
+                messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[TextMessage(text=error_text)],
+                    )
                 )
-            )
+        except Exception:
+            # Reply token might already be used, just log
+            logger.error("Cannot send error message - reply token might be used")
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
-def handle_text_message(event: MessageEvent):
+async def handle_text_message(event: MessageEvent):
     """Handle text messages from LINE with chatbot."""
     reply_token = event.reply_token
     user_text = event.message.text
-    user_id = event.source.user_id  # Get LINE user ID for chat history
+    line_user_id = event.source.user_id  # Get LINE user ID for chat history
 
-    logger.info(f"Received text message from {user_id}: {user_text}")
+    logger.info(f"Received text message from {line_user_id}: {user_text}")
 
     try:
+        # Get or create user in database
+        user = await user_repository.get_or_create_user(line_user_id)
+        await user_repository.increment_message_count(user)
+
         with ApiClient(configuration) as api_client:
             messaging_api = MessagingApi(api_client)
 
-            # Get chatbot response with history context
-            bot_response = chat_service.chat(user_id=user_id, message=user_text)
+            # Get chatbot response with database history
+            bot_response = await chat_service.chat(user=user, message=user_text)
 
             # Validate bot response
             if not bot_response or not bot_response.strip():
@@ -171,25 +198,14 @@ def handle_text_message(event: MessageEvent):
 
             logger.info(f"Bot response length: {len(bot_response)}")
 
-            # Create beautiful chat Flex Message
-            flex_content = create_chat_response(
-                message=bot_response, user_text=user_text
-            )
+            # Format response message
+            response_text = f"💬 OCR Assistant\n\n{bot_response}\n\n───────────────\n📸 ส่งรูปภาพมาแปลงข้อความได้เลย\n📄 ส่ง PDF มาแปลง 10 หน้าแรกได้"
 
-            # Validate Flex Message JSON
-            try:
-                json_str = json.dumps(flex_content)
-                logger.info(f"Flex message valid JSON, size: {len(json_str)} bytes")
-            except Exception as json_err:
-                logger.error(f"Invalid Flex Message JSON: {json_err}")
-                raise ValueError(f"Invalid Flex Message: {json_err}")
-
+            # Send simple text message (more reliable than Flex Message)
             messaging_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[
-                        FlexMessage(alt_text="Chat Response", contents=flex_content)
-                    ],
+                    messages=[TextMessage(text=response_text)],
                 )
             )
     except LineApiException as e:
@@ -202,15 +218,16 @@ def handle_text_message(event: MessageEvent):
         try:
             with ApiClient(configuration) as api_client:
                 messaging_api = MessagingApi(api_client)
-                flex_content = create_welcome_message(user_text=user_text)
+                fallback_text = (
+                    "💬 OCR Assistant\n\n"
+                    "สวัสดีครับ! ผมเป็น OCR Assistant ที่ช่วยแปลงเอกสารเป็นข้อความ\n\n"
+                    "📸 ส่งรูปภาพมาแปลงข้อความได้เลย\n"
+                    "📄 ส่ง PDF มาแปลง 10 หน้าแรกได้"
+                )
                 messaging_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=reply_token,
-                        messages=[
-                            FlexMessage(
-                                alt_text="Welcome Message", contents=flex_content
-                            )
-                        ],
+                        messages=[TextMessage(text=fallback_text)],
                     )
                 )
         except LineApiException:
@@ -219,28 +236,33 @@ def handle_text_message(event: MessageEvent):
 
 
 @handler.add(MessageEvent, message=FileMessageContent)
-def handle_file_message(event: MessageEvent):
+async def handle_file_message(event: MessageEvent):
     """Handle file messages from LINE (PDF only)."""
     message_id = event.message.id
     reply_token = event.reply_token
     file_name = event.message.file_name
     file_size = event.message.file_size
+    line_user_id = event.source.user_id
 
-    logger.info(f"Received file: {file_name}, size={file_size} bytes")
+    logger.info(f"Received file from {line_user_id}: {file_name}, size={file_size} bytes")
 
     try:
+        # Get or create user in database
+        user = await user_repository.get_or_create_user(line_user_id)
+        await user_repository.increment_message_count(user)
         # Check if PDF
         if not file_name.lower().endswith(".pdf"):
             with ApiClient(configuration) as api_client:
                 messaging_api = MessagingApi(api_client)
-                flex_content = create_error_message(
-                    error_type="Invalid File Type",
-                    error_message="Sorry, I only accept PDF files. Please send a PDF document.",
+                error_text = (
+                    "⚠️ INVALID FILE TYPE\n\n"
+                    "Sorry, I only accept PDF files.\n"
+                    "Please send a PDF document."
                 )
                 messaging_api.reply_message(
                     ReplyMessageRequest(
                         reply_token=reply_token,
-                        messages=[FlexMessage(alt_text="Error", contents=flex_content)],
+                        messages=[TextMessage(text=error_text)],
                     )
                 )
             return
@@ -287,78 +309,106 @@ def handle_file_message(event: MessageEvent):
                 f"OCR completed: pages={pages_processed}, text_length={len(extracted_text)}, time={processing_time:.2f}s"
             )
 
-            # Create beautiful Flex Message
-            flex_content = create_pdf_ocr_result(
-                extracted_text=extracted_text,
-                file_name=file_name,
-                file_size=content_size,
-                pages_processed=pages_processed,
-                max_pages=max_pages,
-                processing_time=processing_time,
+            # Format as simple text message (more reliable than Flex Message)
+            size_kb = content_size / 1024
+            size_mb = size_kb / 1024
+            size_display = f"{size_mb:.2f} MB" if size_mb >= 1 else f"{size_kb:.2f} KB"
+
+            # Truncate if too long
+            display_text = extracted_text[:2000] if len(extracted_text) > 2000 else extracted_text
+            truncated_notice = "\n\n⚠️ (แสดงเฉพาะ 2000 ตัวอักษรแรก)" if len(extracted_text) > 2000 else ""
+
+            result_text = (
+                f"📄 PDF OCR RESULT\n"
+                f"{'='*30}\n"
+                f"📎 File: {file_name}\n"
+                f"📖 Pages: {pages_processed} หน้า (จาก {max_pages} หน้าแรก)\n"
+                f"{'='*30}\n\n"
+                f"{display_text if display_text.strip() else 'ไม่พบข้อความใน PDF'}\n"
+                f"{truncated_notice}\n\n"
+                f"{'='*30}\n"
+                f"📏 Size: {size_display}\n"
+                f"📝 Length: {len(extracted_text)} characters\n"
+                f"⏱️ Processing: {processing_time:.2f}s"
             )
 
-            # Reply with Flex Message
+            # Save message to database
+            await message_repository.create_message(
+                user=user,
+                message_type=MessageType.PDF,
+                content=extracted_text,
+                metadata={
+                    "file_name": file_name,
+                    "file_size": content_size,
+                    "pages_processed": pages_processed,
+                    "max_pages": max_pages,
+                    "processing_time": processing_time,
+                    "line_message_id": message_id,
+                },
+                line_message_id=message_id,
+            )
+
+            # Reply with simple text message
             messaging_api = MessagingApi(api_client)
             messaging_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=reply_token,
-                    messages=[
-                        FlexMessage(alt_text="PDF OCR Result", contents=flex_content)
-                    ],
+                    messages=[TextMessage(text=result_text)],
                 )
             )
 
     except ValueError as e:
         logger.warning(f"Validation error: {e}")
-        with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
-            flex_content = create_error_message(
-                error_type="ข้อผิดพลาดในการตรวจสอบ", error_message=str(e)
-            )
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[FlexMessage(alt_text="Error", contents=flex_content)],
+        try:
+            with ApiClient(configuration) as api_client:
+                messaging_api = MessagingApi(api_client)
+                error_text = f"⚠️ ข้อผิดพลาดในการตรวจสอบ\n\n{str(e)}"
+                messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[TextMessage(text=error_text)],
+                    )
                 )
-            )
+        except Exception:
+            logger.error("Cannot send error message - reply token might be used")
     except HttpResponseError as e:
         logger.error(f"Azure API error: {e}", exc_info=True)
-        # Handle Azure-specific errors
-        error_msg = "ไม่สามารถประมวลผล PDF ได้\n\n"
+        try:
+            # Handle Azure-specific errors
+            error_msg = "⚠️ AZURE OCR ERROR\n\nไม่สามารถประมวลผล PDF ได้\n\n"
 
-        if "InvalidContentLength" in str(e) or "too large" in str(e).lower():
-            error_msg += (
-                "ไฟล์มีขนาดใหญ่เกินไป หรือมีเนื้อหาที่ซับซ้อน\n\n"
-                "แนะนำ:\n"
-                "• ลดขนาดไฟล์ PDF\n"
-                "• แยกเป็นหลายไฟล์เล็กๆ\n"
-                "• ส่งแค่หน้าที่ต้องการแปลง"
-            )
-        else:
-            error_msg += f"รายละเอียด: {str(e)}"
-
-        with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
-            flex_content = create_error_message(
-                error_type="Azure OCR Error", error_message=error_msg
-            )
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[FlexMessage(alt_text="Error", contents=flex_content)],
+            if "InvalidContentLength" in str(e) or "too large" in str(e).lower():
+                error_msg += (
+                    "ไฟล์มีขนาดใหญ่เกินไป หรือมีเนื้อหาที่ซับซ้อน\n\n"
+                    "แนะนำ:\n"
+                    "• ลดขนาดไฟล์ PDF\n"
+                    "• แยกเป็นหลายไฟล์เล็กๆ\n"
+                    "• ส่งแค่หน้าที่ต้องการแปลง"
                 )
-            )
+            else:
+                error_msg += f"รายละเอียด: {str(e)[:200]}"
+
+            with ApiClient(configuration) as api_client:
+                messaging_api = MessagingApi(api_client)
+                messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[TextMessage(text=error_msg)],
+                    )
+                )
+        except Exception:
+            logger.error("Cannot send error message - reply token might be used")
     except Exception as e:
         logger.error(f"Error processing PDF: {e}", exc_info=True)
-        with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
-            flex_content = create_error_message(
-                error_type="ข้อผิดพลาด",
-                error_message=f"ไม่สามารถประมวลผล PDF ได้\n\n{str(e)[:200]}",
-            )
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[FlexMessage(alt_text="Error", contents=flex_content)],
+        try:
+            with ApiClient(configuration) as api_client:
+                messaging_api = MessagingApi(api_client)
+                error_text = f"⚠️ ข้อผิดพลาด\n\nไม่สามารถประมวลผล PDF ได้\n\n{str(e)[:200]}"
+                messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[TextMessage(text=error_text)],
+                    )
                 )
-            )
+        except Exception:
+            logger.error("Cannot send error message - reply token might be used")
