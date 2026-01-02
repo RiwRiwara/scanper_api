@@ -570,6 +570,17 @@ def create_pdf_ocr_result(
 
 def create_chat_response(message: str, user_text: str) -> dict:
     """Create a beautiful chat response Flex template."""
+    # Validate and clean message
+    if not message or not message.strip():
+        message = "ขอโทษครับ ไม่สามารถตอบกลับได้\n\nลองส่งรูปภาพหรือ PDF มาให้ผมช่วยแปลงเป็นข้อความนะครับ!"
+
+    # Truncate if too long (LINE has limits)
+    if len(message) > 2000:
+        message = message[:2000] + "..."
+
+    if len(user_text) > 500:
+        user_text = user_text[:500] + "..."
+
     return {
         "type": "bubble",
         "size": "mega",

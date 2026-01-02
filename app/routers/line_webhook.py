@@ -1,5 +1,6 @@
 import logging
 import time
+import json
 from fastapi import APIRouter, Request, HTTPException, Header
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
@@ -17,6 +18,7 @@ from linebot.v3.webhooks import (
     FileMessageContent,
 )
 from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging.exceptions import ApiException as LineApiException
 from azure.core.exceptions import HttpResponseError
 
 from app.config import settings
@@ -159,10 +161,28 @@ def handle_text_message(event: MessageEvent):
             # Get chatbot response with history context
             bot_response = chat_service.chat(user_id=user_id, message=user_text)
 
+            # Validate bot response
+            if not bot_response or not bot_response.strip():
+                logger.warning("Empty bot response, using fallback")
+                bot_response = (
+                    "สวัสดีครับ! ผมเป็น OCR Assistant 📄\n\n"
+                    "ส่งรูปภาพหรือไฟล์ PDF มาให้ผมช่วยแปลงเป็นข้อความได้เลยนะครับ!"
+                )
+
+            logger.info(f"Bot response length: {len(bot_response)}")
+
             # Create beautiful chat Flex Message
             flex_content = create_chat_response(
                 message=bot_response, user_text=user_text
             )
+
+            # Validate Flex Message JSON
+            try:
+                json_str = json.dumps(flex_content)
+                logger.info(f"Flex message valid JSON, size: {len(json_str)} bytes")
+            except Exception as json_err:
+                logger.error(f"Invalid Flex Message JSON: {json_err}")
+                raise ValueError(f"Invalid Flex Message: {json_err}")
 
             messaging_api.reply_message(
                 ReplyMessageRequest(
@@ -172,20 +192,30 @@ def handle_text_message(event: MessageEvent):
                     ],
                 )
             )
+    except LineApiException as e:
+        # LINE API error - reply token might be invalid or already used
+        logger.error(f"LINE API error in text handler: {e}", exc_info=True)
+        # Cannot reply again with same token, just log the error
     except Exception as e:
         logger.error(f"Error handling text message: {e}", exc_info=True)
-        # Fallback to welcome message on error
-        with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
-            flex_content = create_welcome_message(user_text=user_text)
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[
-                        FlexMessage(alt_text="Welcome Message", contents=flex_content)
-                    ],
+        # Try fallback message only if we haven't sent anything yet
+        try:
+            with ApiClient(configuration) as api_client:
+                messaging_api = MessagingApi(api_client)
+                flex_content = create_welcome_message(user_text=user_text)
+                messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=reply_token,
+                        messages=[
+                            FlexMessage(
+                                alt_text="Welcome Message", contents=flex_content
+                            )
+                        ],
+                    )
                 )
-            )
+        except LineApiException:
+            # Reply token already used, just log
+            logger.error("Cannot send fallback message - reply token already used")
 
 
 @handler.add(MessageEvent, message=FileMessageContent)
