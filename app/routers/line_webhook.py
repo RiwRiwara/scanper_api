@@ -8,7 +8,6 @@ from linebot.v3.messaging import (
     MessagingApi,
     MessagingApiBlob,
     ReplyMessageRequest,
-    TextMessage,
     FlexMessage,
 )
 from linebot.v3.webhooks import (
@@ -18,6 +17,7 @@ from linebot.v3.webhooks import (
     FileMessageContent,
 )
 from linebot.v3.exceptions import InvalidSignatureError
+from azure.core.exceptions import HttpResponseError
 
 from app.config import settings
 from app.services.ocr_service import ocr_service
@@ -227,28 +227,34 @@ def handle_file_message(event: MessageEvent):
             content_size = len(file_content)
             logger.info(f"PDF file size: {content_size} bytes")
 
-            # Check size limit (20MB)
-            if content_size > 20 * 1024 * 1024:
-                raise ValueError("PDF size exceeds 20MB limit")
+            # Check size limit (increased to 100MB since we extract first 10 pages only)
+            if content_size > 100 * 1024 * 1024:
+                raise ValueError(
+                    "ไฟล์ PDF ใหญ่เกิน 100MB\n\n"
+                    "กรุณาลดขนาดไฟล์หรือแยกเป็นหลายไฟล์ค่ะ"
+                )
 
             if content_size < 100:
-                raise ValueError("PDF content too small, might be corrupted")
+                raise ValueError("ไฟล์ PDF เสียหายหรือว่างเปล่า")
 
-            logger.info(f"Starting OCR processing for PDF: {file_name} (first 5 pages)")
+            logger.info(f"Starting OCR processing for PDF: {file_name} (first 10 pages)")
 
             # Track processing time
             start_time = time.time()
 
             # Perform OCR on the PDF (first 5 pages)
-            max_pages = 5
+            max_pages = 10
             extracted_text = ocr_service.extract_text_from_pdf_bytes(
                 file_content, max_pages=max_pages
             )
 
             processing_time = time.time() - start_time
 
+            # Count actual pages processed by counting page headers
+            pages_processed = extracted_text.count("━━━━━ หน้า")
+
             logger.info(
-                f"OCR completed: text_length={len(extracted_text)}, time={processing_time:.2f}s"
+                f"OCR completed: pages={pages_processed}, text_length={len(extracted_text)}, time={processing_time:.2f}s"
             )
 
             # Create beautiful Flex Message
@@ -256,7 +262,7 @@ def handle_file_message(event: MessageEvent):
                 extracted_text=extracted_text,
                 file_name=file_name,
                 file_size=content_size,
-                pages_processed=min(max_pages, 5),
+                pages_processed=pages_processed,
                 max_pages=max_pages,
                 processing_time=processing_time,
             )
@@ -277,7 +283,34 @@ def handle_file_message(event: MessageEvent):
         with ApiClient(configuration) as api_client:
             messaging_api = MessagingApi(api_client)
             flex_content = create_error_message(
-                error_type="Validation Error", error_message=str(e)
+                error_type="ข้อผิดพลาดในการตรวจสอบ", error_message=str(e)
+            )
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[FlexMessage(alt_text="Error", contents=flex_content)],
+                )
+            )
+    except HttpResponseError as e:
+        logger.error(f"Azure API error: {e}", exc_info=True)
+        # Handle Azure-specific errors
+        error_msg = "ไม่สามารถประมวลผล PDF ได้\n\n"
+
+        if "InvalidContentLength" in str(e) or "too large" in str(e).lower():
+            error_msg += (
+                "ไฟล์มีขนาดใหญ่เกินไป หรือมีเนื้อหาที่ซับซ้อน\n\n"
+                "แนะนำ:\n"
+                "• ลดขนาดไฟล์ PDF\n"
+                "• แยกเป็นหลายไฟล์เล็กๆ\n"
+                "• ส่งแค่หน้าที่ต้องการแปลง"
+            )
+        else:
+            error_msg += f"รายละเอียด: {str(e)}"
+
+        with ApiClient(configuration) as api_client:
+            messaging_api = MessagingApi(api_client)
+            flex_content = create_error_message(
+                error_type="Azure OCR Error", error_message=error_msg
             )
             messaging_api.reply_message(
                 ReplyMessageRequest(
@@ -290,8 +323,8 @@ def handle_file_message(event: MessageEvent):
         with ApiClient(configuration) as api_client:
             messaging_api = MessagingApi(api_client)
             flex_content = create_error_message(
-                error_type="Processing Error",
-                error_message=f"Failed to process PDF: {str(e)}",
+                error_type="ข้อผิดพลาด",
+                error_message=f"ไม่สามารถประมวลผล PDF ได้\n\n{str(e)[:200]}",
             )
             messaging_api.reply_message(
                 ReplyMessageRequest(

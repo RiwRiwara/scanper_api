@@ -106,7 +106,7 @@ def create_welcome_message(user_text: str) -> dict:
                         },
                         {
                             "type": "text",
-                            "text": "I'll extract text from first 5 pages",
+                            "text": "I'll extract text from first 10 pages",
                             "size": "sm",
                             "color": "#aaaaaa",
                             "wrap": True,
@@ -367,7 +367,7 @@ def create_pdf_ocr_result(
                 },
                 {
                     "type": "text",
-                    "text": f"{pages_processed} of {max_pages} processed",
+                    "text": f"{pages_processed} หน้า (จากทั้งหมด {max_pages} หน้าแรก)",
                     "size": "xs",
                     "color": "#666666",
                     "align": "end",
@@ -503,7 +503,7 @@ def create_pdf_ocr_result(
                     "contents": [
                         {
                             "type": "text",
-                            "text": "File Name:",
+                            "text": "📎 File Name:",
                             "size": "xs",
                             "color": "#aaaaaa",
                         },
@@ -522,11 +522,29 @@ def create_pdf_ocr_result(
                     "margin": "md",
                 },
                 {
-                    "type": "text",
-                    "text": "Extracted Text:",
-                    "weight": "bold",
-                    "size": "md",
-                    "color": "#111111",
+                    "type": "box",
+                    "layout": "horizontal",
+                    "contents": [
+                        {
+                            "type": "text",
+                            "text": "📖",
+                            "size": "md",
+                            "flex": 0,
+                        },
+                        {
+                            "type": "text",
+                            "text": f"แสดง {pages_processed} หน้า (แยกตามหน้า)",
+                            "weight": "bold",
+                            "size": "sm",
+                            "color": "#17c964",
+                            "margin": "sm",
+                            "flex": 1,
+                        },
+                    ],
+                    "margin": "md",
+                },
+                {
+                    "type": "separator",
                     "margin": "md",
                 },
                 {
@@ -534,7 +552,7 @@ def create_pdf_ocr_result(
                     "text": display_text if display_text else "No text found in PDF.",
                     "size": "sm",
                     "wrap": True,
-                    "margin": "sm",
+                    "margin": "md",
                     "color": "#333333",
                 },
             ],
@@ -660,7 +678,7 @@ def create_chat_response(message: str, user_text: str) -> dict:
                         },
                         {
                             "type": "text",
-                            "text": "ส่ง PDF มาแปลง 5 หน้าแรกได้",
+                            "text": "ส่ง PDF มาแปลง 10 หน้าแรกได้",
                             "size": "xs",
                             "color": "#aaaaaa",
                             "margin": "sm",
