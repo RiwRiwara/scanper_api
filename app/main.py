@@ -1,6 +1,13 @@
+import logging
 from fastapi import FastAPI
 
 from app.routers import line_router
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 app = FastAPI(title="Scanper API - LINE OCR Bot", version="0.1.0")
 
