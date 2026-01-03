@@ -2,7 +2,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import line_router, liff_router
+from app.routers import line_router, liff_router, payment_router
 from app.database import lifespan
 
 # Configure logging
@@ -35,6 +35,7 @@ app.add_middleware(
 # Include routers
 app.include_router(line_router)
 app.include_router(liff_router)
+app.include_router(payment_router)
 
 
 @app.get("/health")

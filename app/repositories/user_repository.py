@@ -122,6 +122,27 @@ class UserRepository:
             logger.error(f"Error getting user: {e}", exc_info=True)
             return None
 
+    @staticmethod
+    async def update_display_name(user: User, new_display_name: str) -> User:
+        """
+        Update user's display name.
+
+        Args:
+            user: User document
+            new_display_name: New display name to set
+
+        Returns:
+            Updated user document
+        """
+        try:
+            user.display_name = new_display_name.strip()
+            await user.save()
+            logger.info(f"Display name updated for {user.line_user_id}: {new_display_name}")
+            return user
+        except Exception as e:
+            logger.error(f"Error updating display name: {e}", exc_info=True)
+            raise
+
 
 # Singleton instance
 user_repository = UserRepository()

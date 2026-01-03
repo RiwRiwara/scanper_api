@@ -20,5 +20,17 @@ class Settings:
     MONGODB_URL: str = os.getenv("MONGODB_URL", "")
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "scanper")
 
+    # Beam Payment Gateway (Production)
+    BEAM_API_URL: str = os.getenv("BEAM_API_URL", "https://api.beamcheckout.com")
+    BEAM_MERCHANT_ID: str = os.getenv("BEAM_MERCHANT_ID", "")
+    BEAM_API_KEY: str = os.getenv("BEAM_API_KEY", "")
+    BEAM_WEBHOOK_SECRET: str = os.getenv("BEAM_WEBHOOK_SECRET", "")
+
+    # Frontend URL for redirects
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://liff.line.me")
+
+    # LIFF URL for opening full OCR results
+    LIFF_URL: str = os.getenv("LIFF_URL", "https://liff.line.me/YOUR_LIFF_ID")
+
 
 settings = Settings()

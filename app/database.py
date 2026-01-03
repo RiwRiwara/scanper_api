@@ -6,7 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from beanie import init_beanie
 
 from app.config import settings
-from app.models import User, Message
+from app.models import User, Message, Payment
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class Database:
 
             # Initialize Beanie with document models
             await init_beanie(
-                database=cls.client[settings.MONGODB_DB_NAME], document_models=[User, Message]
+                database=cls.client[settings.MONGODB_DB_NAME], document_models=[User, Message, Payment]
             )
 
             logger.info("Beanie ODM initialized successfully")
