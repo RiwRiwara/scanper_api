@@ -6,6 +6,10 @@ from beanie import Document
 from pydantic import Field
 
 
+# Default OCR limit per session
+DEFAULT_OCR_LIMIT = 50
+
+
 class User(Document):
     """User model for LINE users."""
 
@@ -14,6 +18,21 @@ class User(Document):
     last_seen_at: datetime = Field(default_factory=datetime.utcnow)
     message_count: int = Field(default=0)
     display_name: Optional[str] = None
+
+    # OCR Usage Tracking
+    ocr_count_session: int = Field(default=0, description="OCR pages used in current session (resettable by admin)")
+    ocr_limit: int = Field(default=DEFAULT_OCR_LIMIT, description="Max OCR pages allowed per session (admin adjustable)")
+    ocr_count_total: int = Field(default=0, description="Total OCR pages processed (all time)")
+
+    @property
+    def ocr_remaining(self) -> int:
+        """Get remaining OCR quota for this session."""
+        return max(0, self.ocr_limit - self.ocr_count_session)
+
+    @property
+    def is_ocr_limit_reached(self) -> bool:
+        """Check if user has reached their OCR limit."""
+        return self.ocr_count_session >= self.ocr_limit
 
     class Settings:
         name = "users"  # MongoDB collection name
@@ -29,5 +48,8 @@ class User(Document):
                 "last_seen_at": "2026-01-03T10:05:00",
                 "message_count": 5,
                 "display_name": "John Doe",
+                "ocr_count_session": 10,
+                "ocr_limit": 50,
+                "ocr_count_total": 150,
             }
         }

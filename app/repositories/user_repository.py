@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from app.models.user import User
 
@@ -52,6 +52,75 @@ class UserRepository:
             await user.save()
         except Exception as e:
             logger.error(f"Error incrementing message count: {e}", exc_info=True)
+
+    @staticmethod
+    async def check_ocr_limit(user: User) -> Tuple[bool, int, int]:
+        """
+        Check if user has reached their OCR limit.
+
+        Returns:
+            Tuple of (is_allowed, remaining, limit)
+        """
+        return (
+            not user.is_ocr_limit_reached,
+            user.ocr_remaining,
+            user.ocr_limit
+        )
+
+    @staticmethod
+    async def increment_ocr_count(user: User, pages: int = 1) -> Tuple[int, int]:
+        """
+        Increment user's OCR count (both session and total).
+
+        Args:
+            user: User document
+            pages: Number of pages processed (default 1)
+
+        Returns:
+            Tuple of (new_session_count, remaining)
+        """
+        try:
+            user.ocr_count_session += pages
+            user.ocr_count_total += pages
+            await user.save()
+            logger.info(
+                f"OCR count updated for {user.line_user_id}: "
+                f"session={user.ocr_count_session}/{user.ocr_limit}, "
+                f"total={user.ocr_count_total}"
+            )
+            return user.ocr_count_session, user.ocr_remaining
+        except Exception as e:
+            logger.error(f"Error incrementing OCR count: {e}", exc_info=True)
+            return user.ocr_count_session, user.ocr_remaining
+
+    @staticmethod
+    async def reset_ocr_session(user: User) -> None:
+        """Reset user's OCR session count (admin function)."""
+        try:
+            user.ocr_count_session = 0
+            await user.save()
+            logger.info(f"OCR session reset for {user.line_user_id}")
+        except Exception as e:
+            logger.error(f"Error resetting OCR session: {e}", exc_info=True)
+
+    @staticmethod
+    async def set_ocr_limit(user: User, new_limit: int) -> None:
+        """Set user's OCR limit (admin function)."""
+        try:
+            user.ocr_limit = new_limit
+            await user.save()
+            logger.info(f"OCR limit set to {new_limit} for {user.line_user_id}")
+        except Exception as e:
+            logger.error(f"Error setting OCR limit: {e}", exc_info=True)
+
+    @staticmethod
+    async def get_user_by_line_id(line_user_id: str) -> Optional[User]:
+        """Get user by LINE user ID (for admin functions)."""
+        try:
+            return await User.find_one(User.line_user_id == line_user_id)
+        except Exception as e:
+            logger.error(f"Error getting user: {e}", exc_info=True)
+            return None
 
 
 # Singleton instance

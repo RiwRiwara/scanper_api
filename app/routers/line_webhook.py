@@ -182,6 +182,20 @@ async def process_image_message(event: MessageEvent):
         user = await user_repository.get_or_create_user(line_user_id)
         await user_repository.increment_message_count(user)
 
+        # Check OCR limit
+        ocr_allowed, ocr_remaining, ocr_limit = await user_repository.check_ocr_limit(user)
+        if not ocr_allowed:
+            logger.warning(f"OCR limit reached for user {line_user_id}: {user.ocr_count_session}/{ocr_limit}")
+            send_reply(
+                reply_token,
+                f"⚠️ OCR LIMIT REACHED\n\n"
+                f"คุณใช้โควต้า OCR หมดแล้ว\n"
+                f"ใช้ไปแล้ว: {user.ocr_count_session}/{ocr_limit} หน้า\n\n"
+                f"กรุณาติดต่อแอดมินเพื่อเพิ่มโควต้า\n"
+                f"หรือรอให้แอดมินรีเซ็ตโควต้าให้"
+            )
+            return
+
         # Get image content from LINE (sync operation)
         image_content = await asyncio.to_thread(get_message_content, message_id)
 
@@ -233,6 +247,10 @@ async def process_image_message(event: MessageEvent):
             line_message_id=message_id,
         )
 
+        # Increment OCR count (1 page for image)
+        session_count, remaining = await user_repository.increment_ocr_count(user, pages=1)
+        quota_info = f"📊 โควต้า: {session_count}/{user.ocr_limit} (เหลือ {remaining})"
+
         # Build messages - split long text into multiple messages
         if not extracted_text.strip():
             # No text found
@@ -242,7 +260,8 @@ async def process_image_message(event: MessageEvent):
                 f"ไม่พบข้อความในรูปภาพ\n\n"
                 f"{'='*30}\n"
                 f"📏 Size: {size_display}\n"
-                f"⏱️ Processing: {processing_time:.2f}s"
+                f"⏱️ Processing: {processing_time:.2f}s\n"
+                f"{quota_info}"
             )
             await asyncio.to_thread(send_reply, reply_token, result_text)
         else:
@@ -258,6 +277,7 @@ async def process_image_message(event: MessageEvent):
                 f"{'='*30}\n"
                 f"📏 Size: {size_display} | 📝 {len(extracted_text)} chars\n"
                 f"⏱️ Processing: {processing_time:.2f}s\n"
+                f"{quota_info}\n"
             )
             if total_chunks > 1:
                 header += f"📄 แบ่งเป็น {total_chunks} ข้อความ\n"
@@ -389,6 +409,20 @@ async def process_file_message(event: MessageEvent):
         user = await user_repository.get_or_create_user(line_user_id)
         await user_repository.increment_message_count(user)
 
+        # Check OCR limit (PDF counts as 10 pages max)
+        ocr_allowed, ocr_remaining, ocr_limit = await user_repository.check_ocr_limit(user)
+        if not ocr_allowed:
+            logger.warning(f"OCR limit reached for user {line_user_id}: {user.ocr_count_session}/{ocr_limit}")
+            send_reply(
+                reply_token,
+                f"⚠️ OCR LIMIT REACHED\n\n"
+                f"คุณใช้โควต้า OCR หมดแล้ว\n"
+                f"ใช้ไปแล้ว: {user.ocr_count_session}/{ocr_limit} หน้า\n\n"
+                f"กรุณาติดต่อแอดมินเพื่อเพิ่มโควต้า\n"
+                f"หรือรอให้แอดมินรีเซ็ตโควต้าให้"
+            )
+            return
+
         # Check if PDF
         if not file_name.lower().endswith(".pdf"):
             send_reply(
@@ -460,6 +494,11 @@ async def process_file_message(event: MessageEvent):
             line_message_id=message_id,
         )
 
+        # Increment OCR count by pages processed (minimum 1)
+        pages_to_count = max(1, pages_processed)
+        session_count, remaining = await user_repository.increment_ocr_count(user, pages=pages_to_count)
+        quota_info = f"📊 โควต้า: {session_count}/{user.ocr_limit} (เหลือ {remaining})"
+
         # Build messages - split long text into multiple messages
         if not extracted_text.strip():
             # No text found
@@ -472,7 +511,8 @@ async def process_file_message(event: MessageEvent):
                 f"ไม่พบข้อความใน PDF\n\n"
                 f"{'='*30}\n"
                 f"📏 Size: {size_display}\n"
-                f"⏱️ Processing: {processing_time:.2f}s"
+                f"⏱️ Processing: {processing_time:.2f}s\n"
+                f"{quota_info}"
             )
             await asyncio.to_thread(send_reply, reply_token, result_text)
         else:
@@ -489,6 +529,7 @@ async def process_file_message(event: MessageEvent):
                 f"📎 {file_name}\n"
                 f"📖 {pages_processed} หน้า | 📏 {size_display}\n"
                 f"📝 {len(extracted_text)} chars | ⏱️ {processing_time:.2f}s\n"
+                f"{quota_info}\n"
             )
             if total_chunks > 1:
                 header += f"📄 แบ่งเป็น {total_chunks} ข้อความ\n"
