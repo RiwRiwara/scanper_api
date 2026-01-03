@@ -124,7 +124,7 @@ async def create_beam_charge(
         "currency": "THB",
         "referenceId": reference_id,
         "paymentMethod": {
-            "paymentMethodType": "PROMPTPAY"
+            "paymentMethodType": "QR_PROMPTPAY"
         },
     }
 
@@ -139,6 +139,9 @@ async def create_beam_charge(
             timeout=30.0,
         )
 
+        response_data = response.json()
+        logger.info(f"Beam API response: {response.status_code} - {response_data}")
+
         if response.status_code not in [200, 201]:
             logger.error(f"Beam API error: {response.status_code} - {response.text}")
             raise HTTPException(
@@ -146,7 +149,7 @@ async def create_beam_charge(
                 detail=f"Payment gateway error: {response.status_code}"
             )
 
-        return response.json()
+        return response_data
 
 
 # ============ API Endpoints ============
