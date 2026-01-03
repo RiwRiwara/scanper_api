@@ -208,9 +208,14 @@ async def create_charge(
     action_required = beam_response.get("actionRequired", "NONE")
 
     # Get QR code from PromptPay response
+    # Beam returns: {"encodedImage": {"imageBase64Encoded": "...", "expiryTime": "..."}}
     qr_code = None
     if action_required == "ENCODED_IMAGE":
-        qr_code = beam_response.get("encodedImage")
+        encoded_image = beam_response.get("encodedImage", {})
+        if isinstance(encoded_image, dict):
+            qr_code = encoded_image.get("imageBase64Encoded")
+        else:
+            qr_code = encoded_image  # Fallback if it's already a string
 
     logger.info(f"Beam response action: {action_required}, has QR: {qr_code is not None}")
 
