@@ -2,6 +2,7 @@
 
 import logging
 import httpx
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from typing import Optional
@@ -272,4 +273,131 @@ async def get_message_content(
         content=message.content,
         timestamp=message.timestamp.isoformat(),
         metadata=message.metadata or {}
+    )
+
+
+class ClaimFreeResponse(BaseModel):
+    """Response for claiming daily free pages."""
+    success: bool
+    pages_claimed: int
+    new_limit: int
+    message: str
+    can_claim_again_at: Optional[str] = None
+
+
+class FreeClaimStatusResponse(BaseModel):
+    """Response for free claim status."""
+    can_claim: bool
+    pages_available: int
+    last_claimed: Optional[str] = None
+    next_claim_at: Optional[str] = None
+
+
+@router.get("/free-claim/status", response_model=FreeClaimStatusResponse)
+async def get_free_claim_status(
+    authorization: str = Header(..., description="Bearer <LINE_ACCESS_TOKEN>")
+):
+    """Check if user can claim daily free pages."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    access_token = authorization[7:]
+    profile = await verify_line_access_token(access_token)
+    line_user_id = profile.get("userId")
+
+    user = await user_repository.get_user_by_line_id(line_user_id)
+
+    if not user:
+        # New user can always claim
+        return FreeClaimStatusResponse(
+            can_claim=True,
+            pages_available=20,
+            last_claimed=None,
+            next_claim_at=None
+        )
+
+    from app.models.user import DAILY_FREE_PAGES
+    from datetime import timezone, timedelta
+
+    # Thailand timezone (UTC+7)
+    tz_th = timezone(timedelta(hours=7))
+
+    # Calculate next midnight in Thailand time
+    if user.last_free_claim:
+        last_claim_th = user.last_free_claim.replace(tzinfo=timezone.utc).astimezone(tz_th)
+        next_midnight = (last_claim_th.date() + timedelta(days=1))
+        next_claim_dt = datetime.combine(next_midnight, datetime.min.time()).replace(tzinfo=tz_th)
+        next_claim_str = next_claim_dt.isoformat()
+        last_claimed_str = user.last_free_claim.isoformat()
+    else:
+        next_claim_str = None
+        last_claimed_str = None
+
+    return FreeClaimStatusResponse(
+        can_claim=user.can_claim_free_today,
+        pages_available=DAILY_FREE_PAGES if user.can_claim_free_today else 0,
+        last_claimed=last_claimed_str,
+        next_claim_at=next_claim_str if not user.can_claim_free_today else None
+    )
+
+
+@router.post("/free-claim", response_model=ClaimFreeResponse)
+async def claim_free_pages(
+    authorization: str = Header(..., description="Bearer <LINE_ACCESS_TOKEN>")
+):
+    """
+    Claim daily free 20 OCR pages.
+
+    Each user can claim once per day, resets at midnight (Thailand time).
+    """
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    access_token = authorization[7:]
+    profile = await verify_line_access_token(access_token)
+    line_user_id = profile.get("userId")
+
+    logger.info(f"Free claim request from: {line_user_id}")
+
+    # Get or create user
+    user = await user_repository.get_or_create_user(line_user_id)
+
+    # Check if can claim today
+    if not user.can_claim_free_today:
+        from datetime import timezone, timedelta
+        tz_th = timezone(timedelta(hours=7))
+
+        if user.last_free_claim:
+            last_claim_th = user.last_free_claim.replace(tzinfo=timezone.utc).astimezone(tz_th)
+            next_midnight = (last_claim_th.date() + timedelta(days=1))
+            next_claim_dt = datetime.combine(next_midnight, datetime.min.time()).replace(tzinfo=tz_th)
+
+            raise HTTPException(
+                status_code=400,
+                detail=f"Already claimed today. Next claim available at {next_claim_dt.strftime('%Y-%m-%d %H:%M')} (Thailand time)"
+            )
+        raise HTTPException(status_code=400, detail="Already claimed today")
+
+    from app.models.user import DAILY_FREE_PAGES
+
+    # Add free pages to user's limit
+    user.ocr_limit += DAILY_FREE_PAGES
+    user.last_free_claim = datetime.utcnow()
+    await user.save()
+
+    logger.info(f"User {line_user_id} claimed {DAILY_FREE_PAGES} free pages, new limit: {user.ocr_limit}")
+
+    # Calculate next claim time (midnight Thailand time)
+    from datetime import timezone, timedelta
+    tz_th = timezone(timedelta(hours=7))
+    now_th = datetime.now(tz_th)
+    next_midnight = (now_th.date() + timedelta(days=1))
+    next_claim_dt = datetime.combine(next_midnight, datetime.min.time()).replace(tzinfo=tz_th)
+
+    return ClaimFreeResponse(
+        success=True,
+        pages_claimed=DAILY_FREE_PAGES,
+        new_limit=user.ocr_limit,
+        message=f"Successfully claimed {DAILY_FREE_PAGES} free pages!",
+        can_claim_again_at=next_claim_dt.isoformat()
     )
