@@ -41,6 +41,11 @@ class Payment(Document):
     card_last4: Optional[str] = None
     card_brand: Optional[str] = None
 
+    # QR code data (for PromptPay)
+    qr_code: Optional[str] = Field(default=None, description="Base64 encoded QR image")
+    qr_raw_data: Optional[str] = Field(default=None, description="Raw QR data for regeneration")
+    qr_expiry: Optional[datetime] = Field(default=None, description="QR code expiry time")
+
     class Settings:
         name = "payments"
         indexes = [

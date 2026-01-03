@@ -11,8 +11,20 @@ from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
 from typing import Optional, List
 
+from linebot.v3.messaging import (
+    Configuration,
+    ApiClient,
+    MessagingApi,
+    PushMessageRequest,
+    FlexMessage,
+    FlexContainer,
+)
+
 from app.config import settings
 from app.repositories.user_repository import user_repository
+
+# LINE SDK setup for push messages
+line_configuration = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
 from app.models.payment import (
     Payment,
     PaymentStatus,
@@ -101,6 +113,144 @@ def verify_beam_signature(payload: bytes, signature: str) -> bool:
     except Exception as e:
         logger.error(f"Error verifying Beam signature: {e}")
         return False
+
+
+def build_receipt_flex_message(
+    charge_id: str,
+    amount_thb: float,
+    pages_purchased: int,
+    new_quota: int,
+    payment_method: str,
+    completed_at: datetime,
+) -> dict:
+    """Build receipt Flex Message for successful payment."""
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": "RECEIPT",
+                    "weight": "bold",
+                    "color": "#1DB446",
+                    "size": "sm"
+                },
+                {
+                    "type": "text",
+                    "text": "Scanper OCR",
+                    "weight": "bold",
+                    "size": "xxl",
+                    "margin": "md"
+                },
+                {
+                    "type": "text",
+                    "text": "Thank you for your purchase!",
+                    "size": "xs",
+                    "color": "#aaaaaa",
+                    "wrap": True
+                },
+                {
+                    "type": "separator",
+                    "margin": "xxl"
+                },
+                {
+                    "type": "box",
+                    "layout": "vertical",
+                    "margin": "xxl",
+                    "spacing": "sm",
+                    "contents": [
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": "OCR Pages", "size": "sm", "color": "#555555", "flex": 0},
+                                {"type": "text", "text": f"+{pages_purchased} pages", "size": "sm", "color": "#1DB446", "align": "end", "weight": "bold"}
+                            ]
+                        },
+                        {
+                            "type": "separator",
+                            "margin": "xxl"
+                        },
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "margin": "xxl",
+                            "contents": [
+                                {"type": "text", "text": "AMOUNT", "size": "sm", "color": "#555555"},
+                                {"type": "text", "text": f"฿{amount_thb:.0f}", "size": "sm", "color": "#111111", "align": "end"}
+                            ]
+                        },
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": "PAYMENT", "size": "sm", "color": "#555555"},
+                                {"type": "text", "text": payment_method or "PromptPay", "size": "sm", "color": "#111111", "align": "end"}
+                            ]
+                        },
+                        {
+                            "type": "box",
+                            "layout": "horizontal",
+                            "contents": [
+                                {"type": "text", "text": "NEW QUOTA", "size": "sm", "color": "#555555"},
+                                {"type": "text", "text": f"{new_quota} pages", "size": "sm", "color": "#1DB446", "align": "end", "weight": "bold"}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "separator",
+                    "margin": "xxl"
+                },
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "margin": "md",
+                    "contents": [
+                        {"type": "text", "text": "REF ID", "size": "xs", "color": "#aaaaaa", "flex": 0},
+                        {"type": "text", "text": charge_id[:20], "color": "#aaaaaa", "size": "xs", "align": "end"}
+                    ]
+                },
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "margin": "sm",
+                    "contents": [
+                        {"type": "text", "text": "DATE", "size": "xs", "color": "#aaaaaa", "flex": 0},
+                        {"type": "text", "text": completed_at.strftime("%Y-%m-%d %H:%M"), "color": "#aaaaaa", "size": "xs", "align": "end"}
+                    ]
+                }
+            ]
+        },
+        "styles": {
+            "footer": {
+                "separator": True
+            }
+        }
+    }
+
+
+def send_receipt_push_message(line_user_id: str, receipt_flex: dict):
+    """Send receipt Flex Message via LINE Push API."""
+    try:
+        with ApiClient(line_configuration) as api_client:
+            messaging_api = MessagingApi(api_client)
+            messaging_api.push_message(
+                PushMessageRequest(
+                    to=line_user_id,
+                    messages=[
+                        FlexMessage(
+                            alt_text="Payment Receipt - Scanper OCR",
+                            contents=FlexContainer.from_dict(receipt_flex)
+                        )
+                    ],
+                )
+            )
+            logger.info(f"Receipt sent to {line_user_id}")
+    except Exception as e:
+        logger.error(f"Failed to send receipt: {e}")
 
 
 async def create_beam_charge(
@@ -208,18 +358,29 @@ async def create_charge(
     action_required = beam_response.get("actionRequired", "NONE")
 
     # Get QR code from PromptPay response
-    # Beam returns: {"encodedImage": {"imageBase64Encoded": "...", "expiryTime": "..."}}
+    # Beam returns: {"encodedImage": {"imageBase64Encoded": "...", "rawData": "...", "expiry": "..."}}
     qr_code = None
+    qr_raw_data = None
+    qr_expiry = None
+
     if action_required == "ENCODED_IMAGE":
         encoded_image = beam_response.get("encodedImage", {})
         if isinstance(encoded_image, dict):
             qr_code = encoded_image.get("imageBase64Encoded")
+            qr_raw_data = encoded_image.get("rawData")
+            expiry_str = encoded_image.get("expiry")
+            if expiry_str:
+                try:
+                    # Parse ISO format: "2026-01-03T07:05:56.956351545Z"
+                    qr_expiry = datetime.fromisoformat(expiry_str.replace("Z", "+00:00"))
+                except Exception as e:
+                    logger.warning(f"Failed to parse QR expiry: {e}")
         else:
             qr_code = encoded_image  # Fallback if it's already a string
 
     logger.info(f"Beam response action: {action_required}, has QR: {qr_code is not None}")
 
-    # Save payment record
+    # Save payment record with QR code data
     payment = Payment(
         charge_id=charge_id,
         reference_id=reference_id,
@@ -227,6 +388,9 @@ async def create_charge(
         amount_satang=amount_satang,
         pages_purchased=pages_to_receive,
         status=PaymentStatus.PENDING,
+        qr_code=qr_code,
+        qr_raw_data=qr_raw_data,
+        qr_expiry=qr_expiry,
     )
     await payment.insert()
 
@@ -307,6 +471,62 @@ async def get_payment_history(
     ]
 
 
+class PendingPaymentResponse(BaseModel):
+    """Response for pending payment with QR code."""
+    charge_id: str
+    reference_id: str
+    amount_thb: float
+    pages_to_receive: int
+    qr_code: str
+    qr_expiry: Optional[str] = None
+    created_at: str
+
+
+@router.get("/pending", response_model=Optional[PendingPaymentResponse])
+async def get_pending_payment(
+    authorization: str = Header(..., description="Bearer <LINE_ACCESS_TOKEN>"),
+):
+    """
+    Get user's pending payment with QR code (if any).
+
+    Returns the most recent pending payment that hasn't expired,
+    so user can scan the QR code again.
+    """
+    # Verify LINE token
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+
+    access_token = authorization[7:]
+    profile = await verify_line_access_token(access_token)
+    line_user_id = profile.get("userId")
+
+    # Find pending payment with valid QR code
+    now = datetime.utcnow()
+    pending = await Payment.find_one(
+        Payment.line_user_id == line_user_id,
+        Payment.status == PaymentStatus.PENDING,
+        Payment.qr_code != None,
+    )
+
+    if not pending:
+        return None
+
+    # Check if QR code is expired
+    if pending.qr_expiry and pending.qr_expiry.replace(tzinfo=None) < now:
+        logger.info(f"QR code expired for payment {pending.charge_id}")
+        return None
+
+    return PendingPaymentResponse(
+        charge_id=pending.charge_id,
+        reference_id=pending.reference_id,
+        amount_thb=pending.amount_satang / 100,
+        pages_to_receive=pending.pages_purchased,
+        qr_code=pending.qr_code,
+        qr_expiry=pending.qr_expiry.isoformat() if pending.qr_expiry else None,
+        created_at=pending.created_at.isoformat(),
+    )
+
+
 @router.post("/webhook/beam")
 async def beam_webhook(request: Request):
     """
@@ -369,15 +589,31 @@ async def beam_webhook(request: Request):
 
         # Add pages to user's quota
         user = await user_repository.get_user_by_line_id(payment.line_user_id)
+        new_quota = 0
         if user:
             user.ocr_limit += payment.pages_purchased
             await user.save()
+            new_quota = user.ocr_limit
             logger.info(
                 f"Added {payment.pages_purchased} pages to user {payment.line_user_id}, "
                 f"new limit: {user.ocr_limit}"
             )
         else:
             logger.warning(f"User not found: {payment.line_user_id}")
+
+        # Send receipt via LINE Push Message
+        try:
+            receipt_flex = build_receipt_flex_message(
+                charge_id=payment.charge_id,
+                amount_thb=payment.amount_satang / 100,
+                pages_purchased=payment.pages_purchased,
+                new_quota=new_quota,
+                payment_method=payment.payment_method_type,
+                completed_at=payment.completed_at,
+            )
+            send_receipt_push_message(payment.line_user_id, receipt_flex)
+        except Exception as e:
+            logger.error(f"Failed to send receipt: {e}")
 
         return {"status": "ok", "message": "Payment processed"}
 
