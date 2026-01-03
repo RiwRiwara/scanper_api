@@ -6,7 +6,7 @@ import hashlib
 import base64
 import uuid
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
 from typing import Optional, List
@@ -119,12 +119,19 @@ async def create_beam_charge(
     auth_string = f"{settings.BEAM_MERCHANT_ID}:{settings.BEAM_API_KEY}"
     auth_b64 = base64.b64encode(auth_string.encode()).decode()
 
+    # Calculate expiry time (15 minutes from now)
+    expiry_time = (datetime.utcnow() + timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     payload = {
         "amount": amount_satang,
         "currency": "THB",
         "referenceId": reference_id,
+        "returnUrl": f"{settings.FRONTEND_URL}?payment=complete&ref={reference_id}",
         "paymentMethod": {
-            "paymentMethodType": "QR_PROMPTPAY"
+            "paymentMethodType": "QR_PROMPT_PAY",
+            "qrPromptPay": {
+                "expiryTime": expiry_time
+            }
         },
     }
 
