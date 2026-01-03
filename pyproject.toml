@@ -19,6 +19,7 @@ pypdf = "^4.0.0"
 beanie = ">=1.26.0,<2.0"
 motor = ">=3.3.0,<4.0"
 pydantic = ">=2.0.0,<3.0"
+nest-asyncio = "^1.6.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
