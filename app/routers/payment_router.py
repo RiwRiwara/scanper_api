@@ -42,6 +42,7 @@ class CreateChargeResponse(BaseModel):
     pages_to_receive: int
     action_required: str  # NONE, REDIRECT, ENCODED_IMAGE
     redirect_url: Optional[str] = None
+    qr_code: Optional[str] = None  # Base64 QR code image for PromptPay
 
 
 class PaymentPackage(BaseModel):
@@ -105,21 +106,26 @@ def verify_beam_signature(payload: bytes, signature: str) -> bool:
 async def create_beam_charge(
     amount_satang: int,
     reference_id: str,
-    return_url: str,
 ) -> dict:
-    """Create a charge via Beam API."""
+    """Create a PromptPay charge via Beam API.
+
+    Args:
+        amount_satang: Amount in satang (1 THB = 100 satang)
+        reference_id: Unique reference ID for this charge
+
+    Returns:
+        Beam API response with chargeId and QR code
+    """
     auth_string = f"{settings.BEAM_MERCHANT_ID}:{settings.BEAM_API_KEY}"
     auth_b64 = base64.b64encode(auth_string.encode()).decode()
 
     payload = {
         "amount": amount_satang,
         "currency": "THB",
-        "paymentMethod": {
-            "paymentMethodType": "CARD"
-        },
         "referenceId": reference_id,
-        "returnUrl": return_url,
-        "skip3dsFlow": False,
+        "paymentMethod": {
+            "paymentMethodType": "PROMPTPAY"
+        },
     }
 
     async with httpx.AsyncClient() as client:
@@ -183,21 +189,20 @@ async def create_charge(
     # Generate reference ID
     reference_id = f"scanper_{line_user_id[:8]}_{uuid.uuid4().hex[:8]}"
 
-    # Create return URL (frontend will handle the redirect)
-    return_url = f"{settings.FRONTEND_URL}?payment=complete&ref={reference_id}"
+    logger.info(f"Creating PromptPay charge for {line_user_id}: {amount_satang} satang, {pages_to_receive} pages")
 
-    logger.info(f"Creating charge for {line_user_id}: {amount_satang} satang, {pages_to_receive} pages")
-
-    # Create charge via Beam
-    beam_response = await create_beam_charge(amount_satang, reference_id, return_url)
+    # Create PromptPay charge via Beam
+    beam_response = await create_beam_charge(amount_satang, reference_id)
 
     charge_id = beam_response.get("chargeId")
     action_required = beam_response.get("actionRequired", "NONE")
 
-    # Get redirect URL if needed
-    redirect_url = None
-    if action_required == "REDIRECT":
-        redirect_url = beam_response.get("redirect", {}).get("redirectUrl")
+    # Get QR code from PromptPay response
+    qr_code = None
+    if action_required == "ENCODED_IMAGE":
+        qr_code = beam_response.get("encodedImage")
+
+    logger.info(f"Beam response action: {action_required}, has QR: {qr_code is not None}")
 
     # Save payment record
     payment = Payment(
@@ -218,7 +223,8 @@ async def create_charge(
         amount_satang=amount_satang,
         pages_to_receive=pages_to_receive,
         action_required=action_required,
-        redirect_url=redirect_url,
+        redirect_url=None,  # Not used for PromptPay
+        qr_code=qr_code,
     )
 
 

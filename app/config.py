@@ -30,7 +30,7 @@ class Settings:
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://liff.line.me")
 
     # LIFF URL for opening full OCR results
-    LIFF_URL: str = os.getenv("LIFF_URL", "https://liff.line.me/YOUR_LIFF_ID")
+    LIFF_URL: str = os.getenv("LIFF_URL", "https://liff.line.me/2008810628-Wi0xgwPp")
 
 
 settings = Settings()

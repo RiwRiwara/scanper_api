@@ -12,8 +12,6 @@ from linebot.v3.messaging import (
     MessagingApiBlob,
     ReplyMessageRequest,
     TextMessage,
-    FlexMessage,
-    FlexContainer,
 )
 from linebot.v3.webhooks import (
     MessageEvent,
@@ -123,157 +121,64 @@ def send_reply_multi(reply_token: str, texts: list[str]):
         logger.error(f"Failed to send multi reply: {e}")
 
 
-# Preview length for Flex Message (show first N characters)
-PREVIEW_LENGTH = 500
-
-
-def build_ocr_flex_message(
-    title: str,
-    preview_text: str,
-    full_text_length: int,
-    message_id: str,
-    metadata: dict,
+def build_ocr_summary(
+    text_length: int,
+    size_display: str,
+    processing_time: float,
     quota_info: str,
-) -> dict:
+    pages: int = None,
+) -> str:
+    """Build a compact summary box for OCR results."""
+    lines = [
+        f"📝 ความยาว\t{text_length:,} ตัวอักษร",
+        f"📏 ขนาด\t\t{size_display}",
+        f"⏱️ เวลา\t\t{processing_time:.2f}s",
+        f"📊 โควต้า\t\t{quota_info}",
+    ]
+    if pages is not None:
+        lines.insert(0, f"📖 จำนวน\t\t{pages} หน้า")
+    return "\n".join(lines)
+
+
+def build_ocr_messages(
+    summary: str,
+    content: str,
+    max_chars: int = MAX_CHARS_PER_MESSAGE,
+) -> list[str]:
     """
-    Build a compact Flex Message with preview and "ดูเพิ่มเติม" button.
+    Build OCR result messages with summary + content split into chunks.
 
-    Args:
-        title: Message title (e.g., "📸 IMAGE OCR")
-        preview_text: First ~500 chars of OCR result
-        full_text_length: Total length of OCR text
-        message_id: Database message ID for LIFF URL
-        metadata: Dict with size, processing_time, etc.
-        quota_info: User quota string
-
-    Returns:
-        Flex Message JSON dict
+    Returns list of messages:
+    - Message 1: Summary + first chunk of content
+    - Message 2+: "📃 ต่อ (2/3)\\n" + content chunk
     """
-    # Truncate preview if needed
-    if len(preview_text) > PREVIEW_LENGTH:
-        preview_text = preview_text[:PREVIEW_LENGTH] + "..."
+    # Calculate space for content in first message (summary takes some space)
+    first_msg_content_limit = max_chars - len(summary) - 50  # 50 for separator
 
-    # Build LIFF URL
-    liff_url = f"{settings.LIFF_URL}/ocr/{message_id}"
+    if len(content) <= first_msg_content_limit:
+        # Content fits in one message with summary
+        return [f"{summary}\n{'─'*25}\n{content}"]
 
-    return {
-        "type": "bubble",
-        "size": "mega",
-        "header": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [
-                {
-                    "type": "text",
-                    "text": title,
-                    "weight": "bold",
-                    "size": "lg",
-                    "color": "#1DB446"
-                }
-            ],
-            "backgroundColor": "#F5F5F5",
-            "paddingAll": "15px"
-        },
-        "body": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [
-                {
-                    "type": "text",
-                    "text": preview_text if preview_text.strip() else "ไม่พบข้อความ",
-                    "wrap": True,
-                    "size": "sm",
-                    "color": "#333333",
-                    "maxLines": 10
-                },
-                {
-                    "type": "separator",
-                    "margin": "lg"
-                },
-                {
-                    "type": "box",
-                    "layout": "vertical",
-                    "margin": "lg",
-                    "contents": [
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "contents": [
-                                {"type": "text", "text": "📝 ความยาว", "size": "xs", "color": "#888888", "flex": 1},
-                                {"type": "text", "text": f"{full_text_length:,} ตัวอักษร", "size": "xs", "color": "#333333", "flex": 2, "align": "end"}
-                            ]
-                        },
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "margin": "sm",
-                            "contents": [
-                                {"type": "text", "text": "📏 ขนาด", "size": "xs", "color": "#888888", "flex": 1},
-                                {"type": "text", "text": metadata.get("size_display", "-"), "size": "xs", "color": "#333333", "flex": 2, "align": "end"}
-                            ]
-                        },
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "margin": "sm",
-                            "contents": [
-                                {"type": "text", "text": "⏱️ เวลา", "size": "xs", "color": "#888888", "flex": 1},
-                                {"type": "text", "text": f"{metadata.get('processing_time', 0):.2f}s", "size": "xs", "color": "#333333", "flex": 2, "align": "end"}
-                            ]
-                        },
-                        {
-                            "type": "box",
-                            "layout": "horizontal",
-                            "margin": "sm",
-                            "contents": [
-                                {"type": "text", "text": "📊 โควต้า", "size": "xs", "color": "#888888", "flex": 1},
-                                {"type": "text", "text": quota_info, "size": "xs", "color": "#1DB446", "flex": 2, "align": "end"}
-                            ]
-                        }
-                    ]
-                }
-            ],
-            "paddingAll": "15px"
-        },
-        "footer": {
-            "type": "box",
-            "layout": "vertical",
-            "contents": [
-                {
-                    "type": "button",
-                    "action": {
-                        "type": "uri",
-                        "label": f"📖 ดูข้อความทั้งหมด ({full_text_length:,} ตัวอักษร)",
-                        "uri": liff_url
-                    },
-                    "style": "primary",
-                    "color": "#1DB446",
-                    "height": "sm"
-                }
-            ],
-            "paddingAll": "15px"
-        }
-    }
+    # Split content into chunks
+    chunks = split_text_to_chunks(content, max_chars - 100)  # Leave room for header
 
+    messages = []
+    total_chunks = len(chunks)
 
-def send_flex_reply(reply_token: str, alt_text: str, flex_content: dict):
-    """Send a Flex Message reply."""
-    try:
-        with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[
-                        FlexMessage(
-                            alt_text=alt_text,
-                            contents=FlexContainer.from_dict(flex_content)
-                        )
-                    ],
-                )
-            )
-    except LineApiException as e:
-        logger.error(f"Failed to send flex reply: {e}")
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            # First message: summary + first chunk
+            if len(summary) + len(chunk) + 50 <= max_chars:
+                messages.append(f"{summary}\n{'─'*25}\n{chunk}")
+            else:
+                # Summary alone, then content starts in next message
+                messages.append(summary)
+                messages.append(f"📃 ต่อ (1/{total_chunks + 1})\n{'─'*25}\n{chunk}")
+        else:
+            # Subsequent messages
+            messages.append(f"📃 ต่อ ({i + 1}/{total_chunks})\n{'─'*25}\n{chunk}")
+
+    return messages[:MAX_MESSAGES_PER_REPLY]  # Limit to 5 messages
 
 
 def get_message_content(message_id: str) -> bytes:
@@ -405,40 +310,32 @@ async def process_image_message(event: MessageEvent):
         session_count, remaining = await user_repository.increment_ocr_count(user, pages=1)
         quota_info = f"{session_count}/{user.ocr_limit} (เหลือ {remaining})"
 
-        # Build and send Flex Message with preview
+        # Build and send OCR result messages
         if not extracted_text.strip():
-            # No text found - simple text message
+            # No text found
             result_text = (
-                f"📸 IMAGE OCR RESULT\n"
-                f"{'='*30}\n\n"
+                f"📸 IMAGE OCR\n"
+                f"{'─'*25}\n"
                 f"ไม่พบข้อความในรูปภาพ\n\n"
-                f"{'='*30}\n"
-                f"📏 Size: {size_display}\n"
-                f"⏱️ Processing: {processing_time:.2f}s\n"
-                f"📊 โควต้า: {quota_info}"
+                f"📏 ขนาด\t\t{size_display}\n"
+                f"⏱️ เวลา\t\t{processing_time:.2f}s\n"
+                f"📊 โควต้า\t\t{quota_info}"
             )
             await asyncio.to_thread(send_reply, reply_token, result_text)
         else:
-            # Build Flex Message with preview and "ดูเพิ่มเติม" button
-            flex_content = build_ocr_flex_message(
-                title="📸 IMAGE OCR",
-                preview_text=extracted_text,
-                full_text_length=len(extracted_text),
-                message_id=str(saved_message.id),
-                metadata={
-                    "size_display": size_display,
-                    "processing_time": processing_time,
-                },
+            # Build summary
+            summary = build_ocr_summary(
+                text_length=len(extracted_text),
+                size_display=size_display,
+                processing_time=processing_time,
                 quota_info=quota_info,
             )
 
-            # Send Flex Message
-            await asyncio.to_thread(
-                send_flex_reply,
-                reply_token,
-                f"OCR Result: {len(extracted_text)} ตัวอักษร",
-                flex_content
-            )
+            # Build messages (split if needed)
+            messages = build_ocr_messages(summary, extracted_text)
+
+            # Send messages
+            await asyncio.to_thread(send_reply_multi, reply_token, messages)
 
     except ValueError as e:
         logger.warning(f"Validation error: {e}")
@@ -640,45 +537,35 @@ async def process_file_message(event: MessageEvent):
         session_count, remaining = await user_repository.increment_ocr_count(user, pages=pages_to_count)
         quota_info = f"{session_count}/{user.ocr_limit} (เหลือ {remaining})"
 
-        # Build and send Flex Message with preview
+        # Build and send OCR result messages
         if not extracted_text.strip():
-            # No text found - simple text message
+            # No text found
             result_text = (
-                f"📄 PDF OCR RESULT\n"
-                f"{'='*30}\n"
-                f"📎 File: {file_name}\n"
-                f"📖 Pages: {pages_processed} หน้า\n"
-                f"{'='*30}\n\n"
+                f"📄 PDF OCR\n"
+                f"{'─'*25}\n"
+                f"📎 {file_name}\n"
                 f"ไม่พบข้อความใน PDF\n\n"
-                f"{'='*30}\n"
-                f"📏 Size: {size_display}\n"
-                f"⏱️ Processing: {processing_time:.2f}s\n"
-                f"📊 โควต้า: {quota_info}"
+                f"📖 จำนวน\t\t{pages_processed} หน้า\n"
+                f"📏 ขนาด\t\t{size_display}\n"
+                f"⏱️ เวลา\t\t{processing_time:.2f}s\n"
+                f"📊 โควต้า\t\t{quota_info}"
             )
             await asyncio.to_thread(send_reply, reply_token, result_text)
         else:
-            # Build Flex Message with preview and "ดูเพิ่มเติม" button
-            flex_content = build_ocr_flex_message(
-                title=f"📄 PDF OCR ({pages_processed} หน้า)",
-                preview_text=extracted_text,
-                full_text_length=len(extracted_text),
-                message_id=str(saved_message.id),
-                metadata={
-                    "size_display": size_display,
-                    "processing_time": processing_time,
-                    "file_name": file_name,
-                    "pages": pages_processed,
-                },
+            # Build summary with page count
+            summary = build_ocr_summary(
+                text_length=len(extracted_text),
+                size_display=size_display,
+                processing_time=processing_time,
                 quota_info=quota_info,
+                pages=pages_processed,
             )
 
-            # Send Flex Message
-            await asyncio.to_thread(
-                send_flex_reply,
-                reply_token,
-                f"PDF OCR: {file_name} - {len(extracted_text)} ตัวอักษร",
-                flex_content
-            )
+            # Build messages (split if needed)
+            messages = build_ocr_messages(summary, extracted_text)
+
+            # Send messages
+            await asyncio.to_thread(send_reply_multi, reply_token, messages)
 
     except ValueError as e:
         logger.warning(f"Validation error: {e}")
