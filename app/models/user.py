@@ -7,10 +7,10 @@ from pydantic import Field
 
 
 # Default OCR limit per session
-DEFAULT_OCR_LIMIT = 50
+DEFAULT_OCR_LIMIT = 20
 
 # Daily free pages
-DAILY_FREE_PAGES = 20
+DAILY_FREE_PAGES = 5
 
 
 class User(Document):
